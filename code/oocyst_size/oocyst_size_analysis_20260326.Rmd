@@ -1,0 +1,317 @@
+---
+title: "Analysis of oocyst size 17 Oct 2025"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+---
+
+ 
+
+```{r, message=FALSE}
+library(lme4)
+library(MASS)
+library(ggplot2)
+library(emmeans)
+library(tidyverse)
+library(glmmTMB)
+library(car)
+library(devtools)
+library(cowplot)
+library(broom.mixed)
+library(ggbeeswarm)
+```
+
+
+
+```{r}
+WARP <- read.csv("/Users/virginiahowick/Documents/allelic_replacement/OocystSize_Lah/WARP/WARP_oocystSize_28Jul25.csv")
+HSP101 <- read.csv("/Users/virginiahowick/Documents/allelic_replacement/OocystSize_Lah/HSP101/HSP101_oocystSize_13Apr25.csv")
+Pfs47 <- read.csv("/Users/virginiahowick/Documents/allelic_replacement/OocystSize_Lah/P47/P47_oocystSize_13Apr25.csv")
+CTRP <- read.csv("/Users/virginiahowick/Documents/allelic_replacement/OocystSize_Lah/CTRP/CTRP_oocystSize_13Apr25.csv")
+Pfs25 <- read.csv("/Users/virginiahowick/Documents/allelic_replacement/OocystSize_Lah/Pfs25/Pfs25_oocystSize_132Apr25.csv")
+
+
+WARP$gene <- rep("WARP", length(WARP$name))
+HSP101$gene <- rep("HSP101", length(HSP101$name))
+Pfs47$gene <- rep("Pfs47", length(Pfs47$name))
+Pfs25$gene <- rep("Pfs25", length(Pfs25$name))
+CTRP$gene <- rep("CTRP", length(CTRP$name))
+
+#CTRP <- subset(CTRP, background!="HB3")
+#CTRP <- subset(CTRP, clone!="bulk")
+
+CTRP$RefAlt <- ifelse(CTRP$allele == "D", "Ref", "Alt")
+HSP101$RefAlt <- ifelse(HSP101$allele == "R", "Ref", "Alt")
+Pfs25$RefAlt <- ifelse(Pfs25$allele == "G", "Ref", "Alt")
+Pfs47$RefAlt <- ifelse(Pfs47$allele == "S", "Ref", "Alt")
+WARP$RefAlt <- ifelse(WARP$allele == "F", "Ref", "Alt")
+
+alldata <- rbind(CTRP, HSP101, Pfs25, Pfs47, WARP)
+alldata$background <- sub("3D8", "3D7", alldata$background)
+alldata$clone <- sub("E3", "E2", alldata$clone)
+
+write.csv(alldata, file="/Users/virginiahowick/Documents/allelic_replacement/all_oocystsize_data_20260416.csv")
+```
+
+
+Subset data and set as factors
+
+```{r}
+alldata <- subset(alldata, clone!="3D7")
+
+
+alldata$clone <- as.factor(alldata$clone)
+alldata$allele <- as.factor(alldata$allele)
+alldata$rep <- as.factor(alldata$rep)
+alldata$mosquito <- as.factor(alldata$mosquito)
+alldata$RefAlt <- factor(alldata$RefAlt, levels = c("Ref","Alt"), ordered = TRUE)
+alldata$midgut <- as.factor(alldata$midgut)
+
+summary(alldata$oocystsize)
+var(alldata$oocystsize)
+#alldata <- subset(alldata, mosquito!="An_alb")
+
+alldata$oocyst_prev <- rep(0, length(alldata$name))
+alldata[which(alldata$oocysts > 0), ]$oocyst_prev <- 1
+
+alldata$mosq_allele <- interaction(alldata$mosquito,
+                                           alldata$allele,
+                                           sep = "_")
+
+
+```
+
+Plot graph from raw data
+
+```{r}
+
+
+
+# The genes you want to loop over
+genes_to_plot <- c("CTRP", "HSP101", "Pfs25", "Pfs47", "WARP")
+
+# Make plots for each gene
+plots <- lapply(genes_to_plot, function(g) {
+ggplot(filter(alldata, gene == g),
+       aes(x = RefAlt, y = oocystsize)) +
+  geom_violin(aes(colour = RefAlt), width = 0.6, size = 0.4) +
+  ggbeeswarm::geom_quasirandom(
+    aes(color = RefAlt),
+    groupOnX = TRUE,        # swarm within each x group
+    dodge.width = 0.6,      # keeps Ref/Alt separated
+    width = 0.25,           # horizontal spread
+    alpha = 0.55, size = 0.75
+  ) +
+  facet_grid(. ~ mosquito, labeller = labeller(
+    mosquito = c(An_gam = "gambiae", An_steph = "stephensi",
+                 An_mini = "minimus", An_alb = "albimanus")
+  )) +
+  theme_bw(base_size = 6) +
+  theme(
+    axis.line = element_line(colour = "black", size = 0.3),
+    strip.background = element_rect(fill = "white", color = "black"),
+    strip.text = element_text(face = "italic", size = 6),
+    axis.text = element_text(size = 6),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = "none",
+    axis.ticks.length = unit(0.1, "cm")
+  ) +
+  scale_fill_manual(values = c("#E31A1C", "#6A3D9A")) +
+  scale_color_manual(values = c("#E31A1C", "#6A3D9A")) +
+  ggtitle(g)
+})
+# Access a specific plot
+plots[[1]]
+plots[[2]]
+plots[[3]]
+plots[[4]]
+plots[[5]]
+
+
+
+
+pdf("/Users/virginiahowick/Documents/allelic_replacement/plots/oocyst_size_20251017.pdf", width = 5, height = 5)
+plot_grid(plotlist = plots, ncol = 2)
+dev.off()
+```
+
+Just CTRP and WARP
+```{r}
+
+# The genes you want to loop over
+genes_to_plot <- c("CTRP", "WARP")
+
+# Make plots for each gene
+plots <- lapply(genes_to_plot, function(g) {
+ggplot(filter(alldata, gene == g),
+       aes(x = RefAlt, y = oocystsize)) +
+  geom_violin(aes(colour = RefAlt), width = 0.6, size = 0.4) +
+  ggbeeswarm::geom_quasirandom(
+    aes(color = RefAlt),
+    groupOnX = TRUE,        # swarm within each x group
+    dodge.width = 0.6,      # keeps Ref/Alt separated
+    width = 0.25,           # horizontal spread
+    alpha = 0.55, size = 0.75
+  ) +
+  facet_grid(. ~ mosquito, labeller = labeller(
+    mosquito = c(An_gam = "gambiae", An_steph = "stephensi",
+                 An_mini = "minimus", An_alb = "albimanus")
+  )) +
+  theme_bw(base_size = 6) +
+  theme(
+    axis.line = element_line(colour = "black", size = 0.3),
+    strip.background = element_rect(fill = "white", color = "black"),
+    strip.text = element_text(face = "italic", size = 6),
+    axis.text = element_text(size = 6),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = "none",
+    axis.ticks.length = unit(0.1, "cm")
+  ) +
+  scale_fill_manual(values = c("#E31A1C", "#6A3D9A")) +
+  scale_color_manual(values = c("#E31A1C", "#6A3D9A"))
+  #ggtitle(g)
+})
+# Access a specific plot
+plots[[1]]
+plots[[2]]
+
+
+
+
+
+pdf("/Users/virginiahowick/Documents/allelic_replacement/plots/oocyst_size_20260326.pdf", width = 2.5, height = 3.5)
+plot_grid(plotlist = plots, ncol = 1)
+dev.off()
+```
+
+
+```{r}
+
+# The genes you want to loop over
+genes_to_plot <- c("HSP101", "Pfs25", "Pfs47")
+
+# Make plots for each gene
+plots <- lapply(genes_to_plot, function(g) {
+ggplot(filter(alldata, gene == g),
+       aes(x = RefAlt, y = oocystsize)) +
+  geom_violin(aes(colour = RefAlt), width = 0.6, size = 0.4) +
+  ggbeeswarm::geom_quasirandom(
+    aes(color = RefAlt),
+    groupOnX = TRUE,        # swarm within each x group
+    dodge.width = 0.6,      # keeps Ref/Alt separated
+    width = 0.25,           # horizontal spread
+    alpha = 0.55, size = 0.75
+  ) +
+  facet_grid(. ~ mosquito, labeller = labeller(
+    mosquito = c(An_gam = "gambiae", An_steph = "stephensi",
+                 An_mini = "minimus", An_alb = "albimanus")
+  )) +
+  theme_bw(base_size = 6) +
+  theme(
+    axis.line = element_line(colour = "black", size = 0.3),
+    strip.background = element_rect(fill = "white", color = "black"),
+    strip.text = element_text(face = "italic", size = 6),
+    axis.text = element_text(size = 6),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = "none",
+    axis.ticks.length = unit(0.1, "cm")
+  ) +
+  scale_fill_manual(values = c("#E31A1C", "#6A3D9A")) +
+  scale_color_manual(values = c("#E31A1C", "#6A3D9A")) +
+  ggtitle(g)
+})
+# Access a specific plot
+plots[[1]]
+plots[[2]]
+plots[[3]]
+
+
+
+
+
+pdf("/Users/virginiahowick/Documents/allelic_replacement/plots/oocyst_size_othergenes_20260326.pdf", width = 2.5, height = 6)
+plot_grid(plotlist = plots, ncol = 1)
+dev.off()
+```
+
+
+Run oocyst prev model and calculate emmeans
+
+```{r}
+
+
+# List of genes to loop over
+genes <- c("CTRP", "HSP101", "Pfs25", "Pfs47", "WARP")
+
+results <- lapply(genes, function(g) {
+  
+  df <- subset(alldata, gene == g)
+  
+  # Choose model formula based on gene
+  if (g == "HSP101") {
+    form <- oocystsize ~ RefAlt * mosquito +
+      (1 | midgut)
+    
+  } else if (g %in% c("CTRP", "Pfs25", "Pfs47", "WARP")) {
+    form <- oocystsize ~ rep + RefAlt * mosquito +
+      (1 | midgut)
+    
+  } 
+  
+  # Fit the model
+  mod <- lmer(form, data = df)
+  
+  # Tidy summary (fixed effects only)
+  sum_df <- broom.mixed::tidy(mod, effects = "fixed") %>%
+    mutate(gene = g)
+  
+  # ANOVA table (Type III)
+  anova_tab <- Anova(mod, type = "III")
+  anova_df <- as.data.frame(anova_tab) %>%
+    rownames_to_column("term") %>%
+    mutate(gene = g)
+  
+  # Estimated marginal means and pairwise contrasts
+  emm_tab <- emmeans(mod, specs = pairwise ~ RefAlt | mosquito)
+  
+  emm_df <- as.data.frame(emm_tab$emmeans) %>%
+    mutate(gene = g)
+  
+  contrast_df <- as.data.frame(emm_tab$contrasts) %>%
+    mutate(gene = g)
+  
+  list(summary = sum_df,
+       anova = anova_df,
+       emm = emm_df,
+       contrasts = contrast_df)
+})
+
+# Combine across genes
+summary_all   <- bind_rows(lapply(results, `[[`, "summary"))
+anova_all     <- bind_rows(lapply(results, `[[`, "anova"))
+emm_all       <- bind_rows(lapply(results, `[[`, "emm"))
+contrasts_all <- bind_rows(lapply(results, `[[`, "contrasts"))
+
+# Export to CSV
+#write.csv(summary_all,   "/Users/virginiahowick/Documents/allelic_replacement/analysis/size_summary_all.csv",   row.names = FALSE)
+#write.csv(anova_all,     "/Users/virginiahowick/Documents/allelic_replacement/analysis/size_anova_all.csv",     row.names = FALSE)
+#write.csv(emm_all,       "/Users/virginiahowick/Documents/allelic_replacement/analysis/size_emm_all.csv",       row.names = FALSE)
+#write.csv(contrasts_all, "/Users/virginiahowick/Documents/allelic_replacement/analysis/size_contrasts_all.csv", row.names = FALSE)
+
+
+summary_all
+anova_all
+emm_all
+contrasts_all
+
+```
+
+
+```{r}
+session_info()
+```
+

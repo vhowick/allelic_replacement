@@ -1,0 +1,556 @@
+---
+title: "Two clones analysis"
+output:
+  html_document:
+    df_print: paged
+---
+
+ 
+
+```{r, message=FALSE}
+library(lme4)
+library(MASS)
+library(ggplot2)
+library(emmeans)
+library(tidyverse)
+library(glmmTMB)
+library(car)
+library(devtools)
+library(cowplot)
+library(broom.mixed)
+library(brglm2)
+```
+
+
+
+```{r}
+WARP <- read.csv("/Users/virginiahowick/Documents/allelic_replacement/Lah_TransmissionProject_Dataset_25Apr25/WARP/WARP_table_oocyst_4Aug25_normalised_2clones.csv")
+
+CTRP <- read.csv("/Users/virginiahowick/Documents/allelic_replacement/Lah_TransmissionProject_Dataset_25Apr25/CTRP/CTRP_table_oocyst_normalised_10Nov25.csv")
+
+
+WARP <- WARP[ , 1:9]
+CTRP <- CTRP[ , 1:9]
+
+WARP$gene <- rep("WARP", length(WARP$name))
+CTRP$gene <- rep("CTRP", length(CTRP$name))
+
+CTRP <- subset(CTRP, background!="HB3")
+CTRP <- subset(CTRP, clone!="bulk")
+
+CTRP$RefMin <- ifelse(CTRP$allele == "D", "Ref", "Minor")
+WARP$RefMin <- ifelse(WARP$allele == "F", "Ref", "Minor")
+
+alldata <- rbind(CTRP, WARP)
+```
+
+
+
+Subset data and set as factors
+
+```{r}
+
+alldata <- subset(alldata, clone!="3D7")
+alldata <- subset(alldata, clone!="HB3")
+alldata$background[alldata$background == "3D25"] <- "3D7"
+
+alldata$clone<-as.factor(alldata$clone)
+alldata$allele<-as.factor(alldata$allele)
+alldata$rep<-as.factor(alldata$rep)
+alldata$mosquito<-as.factor(alldata$mosquito)
+alldata$RefMin <- factor(alldata$RefMin, levels = c("Ref","Minor"), ordered = TRUE)
+
+summary(alldata$oocysts)
+var(alldata$oocysts)
+#alldata <- subset(alldata, mosquito!="An_alb")
+
+alldata$oocyst_prev <- rep(0, length(alldata$name))
+alldata[which(alldata$oocysts > 0), ]$oocyst_prev <- 1
+
+alldata$mosq_allele <- interaction(alldata$mosquito,
+                                           alldata$allele,
+                                           sep = "_")
+
+
+
+```
+
+Plot graph from raw data
+
+```{r}
+#noctrp <- subset(alldata, alldata$gene !="CTRP")
+#noctrp <- subset(noctrp, noctrp$mosquito!="An_alb")
+
+
+# The genes you want to loop over
+genes_to_plot <- c("CTRP", "WARP")
+
+# Make plots for each gene
+plots <- lapply(genes_to_plot, function(g) {
+  ggplot(data = filter(alldata, gene == g), aes(x = RefMin, y = oocysts)) + 
+    geom_violin(size = 0.4) + 
+    geom_jitter(width = 0.2, height = 0.2, aes(color = RefMin), size = 0.7, alpha = 0.7) +
+    scale_y_continuous(
+      limits = c(0, NA),
+      oob = scales::oob_squish_any,  
+      expand = expansion(mult = c(0, .05))
+    ) +
+  scale_x_discrete(
+    labels = c("Ref" = "Ref", "Minor" = "Min")
+  ) +
+    facet_grid(. ~ mosquito, labeller = labeller(
+      mosquito = c(
+        "An_gam"   = "gambiae",
+        "An_steph" = "stephensi",
+        "An_mini"  = "minimus",
+        "An_alb"   = "albimanus"
+      )
+    )) + 
+    theme_bw(base_size = 6) +
+    theme(
+      axis.line = element_line(colour = "black", size = 0.3, linetype = "solid"), 
+      strip.background = element_rect(fill = "white", color = "black"), 
+      strip.text = element_text(face = "italic", size = 3.5),
+      axis.text = element_text(size = 6),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      legend.position = "none",
+      axis.ticks.length = unit(0.1, "cm")
+    ) +
+    scale_colour_manual(values = c("#E31A1C","#6A3D9A")) 
+    #ggtitle(g)   # Add gene name as title
+})
+
+###by clone
+genes_to_plot <- c("CTRP", "WARP")
+
+plots <- lapply(genes_to_plot, function(g) {
+  # Set desired order & labels by gene (paired)
+  if (g == "WARP") {
+    lvl_order <- c("Ref E4", "Alt B8", "Ref E5", "Alt D6")
+    allowed <- tibble(
+      RefMin = c("Ref","Minor","Ref","Minor"),
+      clone  = c("E4","B8","E5","D6"),
+      label  = lvl_order
+    )
+  } else { # CTRP
+    lvl_order <- c("Ref E2", "Alt G9", "Ref B5", "Alt E12")
+    allowed <- tibble(
+      RefMin = c("Ref","Minor","Ref","Minor"),
+      clone  = c("E2","G9","B5","E12"),
+      label  = lvl_order
+    )
+  }
+
+  # Prepare data with paired x labels (Ref/Min included)
+  dat <- alldata %>%
+    filter(gene == g) %>%
+    inner_join(allowed, by = c("RefMin","clone")) %>%     # keep only requested pairs
+    mutate(xlab = factor(label, levels = lvl_order))      # enforce pair order
+
+  ggplot(
+    dat,
+    aes(x = xlab, y = oocysts, color = clone)             # outline color by clone
+  ) +
+    geom_violin(
+      size = 0.4,
+      fill = NA,                                          # no fill; outline only
+      scale = "width",
+      trim = FALSE
+    ) +
+    geom_jitter(
+      width = 0.2, height = 0.2,
+      size = 0.7, alpha = 0.7
+    ) +
+    scale_y_continuous(
+      limits = c(0, NA),
+      oob = scales::oob_squish_any,
+      expand = expansion(mult = c(0, .05))
+    ) +
+    labs(x = NULL, y = NULL) +
+    facet_grid(. ~ mosquito, labeller = labeller(
+      mosquito = c(
+        "An_gam"   = "gambiae",
+        "An_steph" = "stephensi",
+        "An_mini"  = "minimus",
+        "An_alb"   = "albimanus"
+      )
+    )) +
+    theme_bw(base_size = 10) +
+    scale_color_manual(values = c(
+  E4  = "red",
+  B8  = "purple",
+  E5  = "salmon",
+  D6  = "slateblue",
+  E2  = "red",
+  G9  = "purple",
+  B5  = "salmon",
+  E12 = "slateblue"
+)) +
+    theme(
+      axis.line = element_line(colour = "black", size = 0.5),
+      strip.background = element_rect(fill = "white", color = "black"),
+      strip.text = element_text(face = "italic", size = 8),
+      axis.text = element_text(size = 6),
+      #axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      legend.position = "none",    # set to "right" if you want clone legend
+      axis.ticks.length = unit(0.1, "cm")
+    )
+    # Optional: fix clone colors explicitly
+    # + scale_color_manual(values = c(E4="#...", B8="#...", E5="#...", D6="#..."))
+})
+
+# Access a specific plot
+plots[[1]]
+plots[[2]]
+
+
+
+#pdf("/Users/virginiahowick/Documents/allelic_replacement/plots/oocystsbyclone_20260326.pdf", width = 5, height = 5) #was 6 x5
+#plot_grid(plotlist = plots, ncol = 1)
+#dev.off()
+```
+
+
+```{r}
+###by clone
+genes_to_plot <- c("CTRP", "WARP")
+
+plots <- lapply(genes_to_plot, function(g) {
+  # Set desired order & labels by gene (paired)
+  if (g == "WARP") {
+    lvl_order <- c("Ref E4", "Alt B8", "Ref E5", "Alt D6")
+    allowed <- tibble(
+      RefMin = c("Ref","Minor","Ref","Minor"),
+      clone  = c("E4","B8","E5","D6"),
+      label  = lvl_order
+    )
+  } else { # CTRP
+    lvl_order <- c("Ref E2", "Alt G9", "Ref B5", "Alt E12")
+    allowed <- tibble(
+      RefMin = c("Ref","Minor","Ref","Minor"),
+      clone  = c("E2","G9","B5","E12"),
+      label  = lvl_order
+    )
+  }
+
+  # Prepare data with paired x labels (Ref/Min included)
+  dat <- alldata %>%
+    filter(gene == g) %>%
+    inner_join(allowed, by = c("RefMin","clone")) %>%     # keep only requested pairs
+    mutate(xlab = factor(label, levels = lvl_order))      # enforce pair order
+
+  ggplot(
+    dat,
+    aes(x = xlab, y = oocysts, color = clone)             # outline color by clone
+  ) +
+    geom_violin(
+      size = 0.4,
+      fill = NA,                                          # no fill; outline only
+      scale = "width",
+      trim = FALSE
+    ) +
+    geom_jitter(
+      width = 0.2, height = 0.2,
+      size = 0.7, alpha = 0.7
+    ) +
+    scale_y_continuous(
+      limits = c(0, NA),
+      oob = scales::oob_squish_any,
+      expand = expansion(mult = c(0, .05))
+    ) +
+    labs(x = NULL, y = NULL) +
+    facet_grid(. ~ mosquito, labeller = labeller(
+      mosquito = c(
+        "An_gam"   = "gambiae",
+        "An_steph" = "stephensi",
+        "An_mini"  = "minimus",
+        "An_alb"   = "albimanus"
+      )
+    )) +
+    theme_bw(base_size = 10) +
+    scale_color_manual(values = c(
+  E4  = "red",
+  B8  = "purple",
+  E5  = "salmon",
+  D6  = "slateblue",
+  E2  = "red",
+  G9  = "purple",
+  B5  = "salmon",
+  E12 = "slateblue"
+)) +
+    theme(
+      axis.line = element_line(colour = "black", size = 0.5),
+      strip.background = element_rect(fill = "white", color = "black"),
+      strip.text = element_text(face = "italic", size = 8),
+      axis.text = element_text(size = 6),
+      #axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      legend.position = "none",    # set to "right" if you want clone legend
+      axis.ticks.length = unit(0.1, "cm")
+    )
+    # Optional: fix clone colors explicitly
+    # + scale_color_manual(values = c(E4="#...", B8="#...", E5="#...", D6="#..."))
+})
+
+# Access a specific plot
+plots[[1]]
+plots[[2]]
+
+
+
+#pdf("/Users/virginiahowick/Documents/allelic_replacement/plots/oocystsbyclone_20260326.pdf", width = 5, height = 5) #was 6 x5
+#plot_grid(plotlist = plots, ncol = 1)
+#dev.off()
+```
+
+For talk
+
+```{r}
+###by clone
+genes_to_plot <- c("CTRP", "WARP")
+
+plots <- lapply(genes_to_plot, function(g) {
+  # Set desired order & labels by gene (paired)
+  if (g == "WARP") {
+    lvl_order <- c("Ref E4", "Alt B8", "Ref E5", "Alt D6")
+    allowed <- tibble(
+      RefMin = c("Ref","Minor","Ref","Minor"),
+      clone  = c("E4","B8","E5","D6"),
+      label  = lvl_order
+    )
+  } else { # CTRP
+    lvl_order <- c("Ref E2", "Alt G9", "Ref B5", "Alt E12")
+    allowed <- tibble(
+      RefMin = c("Ref","Minor","Ref","Minor"),
+      clone  = c("E2","G9","B5","E12"),
+      label  = lvl_order
+    )
+  }
+
+  # Prepare data with paired x labels (Ref/Min included)
+  dat <- alldata %>%
+    filter(gene == g) %>%
+    inner_join(allowed, by = c("RefMin","clone")) %>%     # keep only requested pairs
+    mutate(xlab = factor(label, levels = lvl_order))      # enforce pair order
+
+  ggplot(
+    dat,
+    aes(x = xlab, y = oocysts, color = clone)             # outline color by clone
+  ) +
+    geom_violin(
+      size = 0.5,
+      fill = NA,                                          # no fill; outline only
+      scale = "width",
+      trim = FALSE
+    ) +
+    geom_jitter(
+      width = 0.2, height = 0.2,
+      size = 0.8, alpha = 0.7
+    ) +
+    scale_y_continuous(
+      limits = c(0, NA),
+      oob = scales::oob_squish_any,
+      expand = expansion(mult = c(0, .05))
+    ) +
+    labs(x = NULL, y = NULL) +
+    facet_grid(. ~ mosquito, labeller = labeller(
+      mosquito = c(
+        "An_gam"   = "gambiae",
+        "An_steph" = "stephensi",
+        "An_mini"  = "minimus",
+        "An_alb"   = "albimanus"
+      )
+    )) +
+    theme_bw(base_size = 12) +
+    scale_color_manual(values = c(
+  E4  = "red",
+  B8  = "purple",
+  E5  = "salmon",
+  D6  = "slateblue",
+  E2  = "red",
+  G9  = "purple",
+  B5  = "salmon",
+  E12 = "slateblue"
+)) +
+    theme(
+      axis.line = element_line(colour = "black", size = 0.8),
+      strip.background = element_rect(fill = "white", color = "black"),
+      strip.text = element_text(face = "italic", size = 12),
+      axis.text = element_text(size = 8),
+      #axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      legend.position = "none",    # set to "right" if you want clone legend
+      axis.ticks.length = unit(0.1, "cm")
+    )
+    # Optional: fix clone colors explicitly
+    # + scale_color_manual(values = c(E4="#...", B8="#...", E5="#...", D6="#..."))
+})
+
+# Access a specific plot
+plots[[1]]
+plots[[2]]
+
+#ggsave(
+#  "/Users/virginiahowick/Documents/allelic_replacement/plots/CTRP2clonesfortalk.pdf",
+#  plot = plots[[1]],
+#  width = 7,
+#  height = 3,
+#  units = "in"
+#)
+
+#ggsave(
+#  "/Users/virginiahowick/Documents/allelic_replacement/plots/WARP2clonesfortalk.pdf",
+#  plot = plots[[2]],
+#  width = 7,
+#  height = 3,
+#  units = "in"
+#)
+
+
+#pdf("/Users/virginiahowick/Documents/allelic_replacement/plots/oocystsbyclone_20260326.pdf", width = 5, height = 5) #was 6 x5
+#plot_grid(plotlist = plots, ncol = 1)
+#dev.off()
+```
+
+
+Calculate N and prop infected to place below raw data plots
+```{r}
+prop_infected <- alldata %>%
+  group_by(mosquito, gene, RefMin) %>%
+  summarise(
+    n_total      = n(),
+    n_infected   = sum(oocyst_prev, na.rm = TRUE),
+    prop_infected = mean(oocyst_prev, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    pct_infected = round(prop_infected * 100, 1)  # one decimal place
+  )
+
+prop_infected
+
+#write.csv(prop_infected, file="/Users/virginiahowick/Documents/allelic_replacement/analysis/oocyst_prevs_20251021.csv")
+```
+
+Run oocyst prev models
+
+```{r}
+
+df <- subset(alldata, gene == "WARP")
+df$clone_group <- ifelse(df$clone %in% c("E5", "D6"),
+                         "clone2",
+                         "clone1")
+
+mod_full <- glm(
+  oocyst_prev ~ RefMin + clone_group + mosquito + RefMin:mosquito + RefMin:clone_group:mosquito,
+  family = binomial(link = "logit"),
+  data = df,
+  method = "brglmFit"
+)
+
+mod_noint <- glm(
+  oocyst_prev ~ RefMin + clone_group + RefMin:mosquito,
+  family = binomial(link = "logit"),
+  data = df,
+  method = "brglmFit"
+)
+
+anova(mod_noint, mod_full, test = "LRT")
+
+
+  
+df <- droplevels(subset(alldata, gene == "CTRP"))
+df <- droplevels(subset(df, mosquito != "An_mini"))
+
+df$clone_group <- ifelse(df$clone %in% c("B5", "E12"),
+                         "clone2",
+                         "clone1")
+
+  
+mod_full <- glm(
+  oocyst_prev ~ RefMin + clone_group + mosquito + RefMin:mosquito + RefMin:clone_group:mosquito,
+  family = binomial(link = "logit"),
+  data = df,
+  method = "brglmFit"
+)
+
+mod_noint <- glm(
+  oocyst_prev ~ RefMin + clone_group + RefMin:mosquito,
+  family = binomial(link = "logit"),
+  data = df,
+  method = "brglmFit"
+)
+
+anova(mod_noint, mod_full, test = "LRT")
+  
+
+  
+
+
+
+```
+
+NOW do the same for intensity models
+```{r}
+
+oocysts_nozeros <- subset(alldata, alldata$oocysts > 0)
+
+df <- subset(oocysts_nozeros, gene == "WARP")
+df$clone_group <- ifelse(df$clone %in% c("E5", "D6"),
+                         "clone2",
+                         "clone1")
+
+mod_full <- glmmTMB(
+    oocysts ~ RefMin + clone_group + mosquito + RefMin:mosquito + RefMin:clone_group:mosquito,
+    family = nbinom2,
+    data = df
+  )
+
+mod_noint <- glmmTMB(
+    oocysts ~ RefMin + clone_group + mosquito + RefMin:mosquito,
+    family = nbinom2,
+    data = df
+  )
+
+
+anova(mod_noint, mod_full, test = "LRT")
+  
+
+
+df <- droplevels(subset(oocysts_nozeros, gene == "CTRP"))
+df <- droplevels(subset(df, mosquito != "An_mini"))
+
+df$clone_group <- ifelse(df$clone %in% c("B5", "E12"),
+                         "clone2",
+                         "clone1")
+
+
+mod_full <- glmmTMB(
+    oocysts ~ RefMin + clone_group + mosquito + RefMin:mosquito + RefMin:clone_group:mosquito,
+    family = nbinom2,
+    data = df
+  )
+
+mod_noint <- glmmTMB(
+    oocysts ~ RefMin + clone_group + mosquito + RefMin:mosquito,
+    family = nbinom2,
+    data = df
+  )
+
+
+anova(mod_noint, mod_full, test = "LRT")
+
+
+
+```
+
+
+```{r}
+session_info()
+```
+

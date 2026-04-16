@@ -1,0 +1,411 @@
+---
+title: "WARP and CTRP spz dataset plots and analysis 12 Nov 2025"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+---
+
+ 
+
+```{r, message=FALSE}
+library(lme4)
+library(MASS)
+library(ggplot2)
+library(emmeans)
+library(tidyverse)
+library(glmmTMB)
+library(car)
+library(devtools)
+library(cowplot)
+library(broom.mixed)
+```
+
+
+
+```{r}
+
+CTRP <- read.csv("/Users/virginiahowick/Documents/allelic_replacement/Sporozoite_all_genes/CTRP_table_sporozoite_normalised_27Mar25.csv")
+WARP <- read.csv("/Users/virginiahowick/Documents/allelic_replacement/Sporozoite_all_genes/WARP_table_sporozoite_normalised_25Aug25.csv")
+
+
+WARP <- WARP[ , 1:9]
+CTRP <- CTRP[ , 1:9]
+
+WARP$gene <- rep("WARP", length(WARP$name))
+CTRP$gene <- rep("CTRP", length(CTRP$name))
+
+#CTRP <- subset(CTRP, background!="HB3")
+#CTRP <- subset(CTRP, clone!="bulk")
+
+CTRP$RefAlt <- ifelse(CTRP$allele == "D", "Ref", "Alt")
+WARP$RefAlt <- ifelse(WARP$allele == "F", "Ref", "Alt")
+
+alldata <- rbind(CTRP, WARP)
+
+write.csv(alldata, file="/Users/virginiahowick/Documents/allelic_replacement/analysis/spz_warpctrp_20260416.csv")
+```
+
+
+Subset data and set as factors
+
+```{r}
+alldata <- subset(alldata, clone!="3D7")
+
+alldata$clone<-as.factor(alldata$clone)
+alldata$allele<-as.factor(alldata$allele)
+alldata$rep<-as.factor(alldata$rep)
+alldata$mosquito<-as.factor(alldata$mosquito)
+alldata$RefAlt <- factor(alldata$RefAlt, levels = c("Ref","Alt"), ordered = TRUE)
+
+summary(alldata$sporozoites)
+var(alldata$sporozoites)
+#alldata <- subset(alldata, mosquito!="An_alb")
+
+alldata$spz_prev <- rep(0, length(alldata$name))
+alldata[which(alldata$sporozoites > 0), ]$spz_prev <- 1
+
+alldata$mosq_allele <- interaction(alldata$mosquito,
+                                           alldata$allele,
+                                           sep = "_")
+
+
+```
+
+Plot graph from raw data
+
+```{r}
+# The genes you want to loop over
+genes_to_plot <- c("CTRP", "WARP")
+
+# Make plots for each gene
+plots <- lapply(genes_to_plot, function(g) {
+  ggplot(data = subset(alldata, gene == g), aes(x = RefAlt, y = log(sporozoites + 1))) +
+  geom_violin(size = 0.4) +
+  geom_jitter(
+    width  = 0.2,
+    height = 0.2,
+    aes(color = RefAlt),
+    size   = 0.7,
+    alpha  = 0.7
+  ) +
+  scale_y_continuous(
+    limits = c(0, NA),
+    oob    = scales::oob_squish_any,  # squish negatives to 0
+    expand = expansion(mult = c(0, .05))
+  ) +
+  scale_x_discrete(
+    labels = c("Ref" = "Ref", "Alt" = "Alt")
+  ) +
+  scale_colour_manual(
+    values = c("#E31A1C", "#6A3D9A")
+  ) +
+  facet_grid(
+    . ~ mosquito,
+    labeller = labeller(
+      mosquito = c(
+        "An_gam"   = "gambiae",
+        "An_steph" = "stephensi",
+        "An_mini"  = "minimus",
+        "An_alb"   = "albimanus"
+      )
+    )
+  ) +
+  theme_bw(base_size = 7) +
+  theme(
+    axis.text.y = element_text(angle = 90, vjust = 0.5, hjust = 0.5),
+    axis.line        = element_line(colour = "black", size = 0.3, linetype = "solid"), 
+    strip.background = element_rect(fill = "white", color = "black"), 
+    strip.text       = element_text(face = "italic", size = 5),
+    axis.text        = element_text(size = 6),
+    axis.title.x     = element_blank(),
+    axis.title.y     = element_blank(),
+    legend.position  = "none",
+    axis.ticks.length = unit(0.1, "cm")
+  )
+})
+
+# Access a specific plot
+plots[[1]]
+plots[[2]]
+
+
+for (i in seq_along(plots)) {
+  ggsave(
+    filename = file.path("/Users/virginiahowick/Documents/allelic_replacement/plots/", paste0("violin_spz", genes_to_plot[i], ".pdf")),
+    plot = plots[[i]],
+    width = 2.25,
+    height = 1.75,
+    units = "in"
+  )
+}
+
+```
+
+Calculate N and prop infected to place below raw data plots
+```{r}
+prop_infected <- alldata %>%
+  group_by(mosquito, gene, RefAlt) %>%
+  summarise(
+    n_total      = n(),
+    n_infected   = sum(spz_prev, na.rm = TRUE),
+    prop_infected = mean(spz_prev, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    pct_infected = round(prop_infected * 100, 1)  # one decimal place
+  )
+
+prop_infected
+
+#write.csv(prop_infected, file="/Users/virginiahowick/Documents/allelic_replacement/analysis/spz_prevs_warpctrp_20251112.csv")
+```
+
+Run spz prev model and calculate emmeans
+
+```{r}
+
+# List of genes to loop over
+genes <- c("CTRP",  "WARP")
+
+results <- lapply(genes, function(g) {
+  
+  df <- subset(alldata, gene == g)   # adjust if data frame has a different name
+  
+  form <- spz_prev ~ RefAlt * mosquito + (1 | rep) + (1 | clone)
+
+  mod <- glmmTMB(
+    form,
+    family = binomial(link = "logit"),
+    data = df
+  )
+  
+  # Tidy summary (fixed effects only)
+  sum_df <- broom.mixed::tidy(mod, effects = "fixed") %>%
+    mutate(gene = g)
+  
+  # ANOVA table
+  anova_tab <- Anova(mod, type = "III")
+  anova_df <- as.data.frame(anova_tab) %>%
+    rownames_to_column("term") %>%
+    mutate(gene = g)
+  
+ # EMMeans + contrasts
+  emm_tab <- emmeans(mod, specs = pairwise ~ RefAlt | mosquito, type = "response")
+  
+  emm_df <- as.data.frame(emm_tab$emmeans) %>%
+    mutate(gene = g)
+  
+  contrast_df <- as.data.frame(emm_tab$contrasts) %>%
+    mutate(gene = g)
+  
+  list(summary = sum_df, anova = anova_df, emm = emm_df, contrasts = contrast_df)
+})
+
+# Combine across genes
+summary_all   <- bind_rows(lapply(results, `[[`, "summary"))
+anova_all     <- bind_rows(lapply(results, `[[`, "anova"))
+emm_all       <- bind_rows(lapply(results, `[[`, "emm"))
+contrasts_all <- bind_rows(lapply(results, `[[`, "contrasts"))
+
+# Export to CSV
+#write.csv(summary_all,   "spz_prev_summary_all.csv",   row.names = FALSE)
+#write.csv(anova_all,     "spz_prev_anova_all.csv",     row.names = FALSE)
+#write.csv(emm_all,       "spz_prev_emm_all.csv",       row.names = FALSE)
+#write.csv(contrasts_all, "spz_prev_contrasts_all.csv", row.names = FALSE)
+
+summary_all
+anova_all
+emm_all
+contrasts_all
+
+```
+
+Now make the EMM prev plots for spz
+```{r}
+
+
+emm_all$symp <- rep("symp", length(emm_all$mosquito))
+#emm_all[which(emm_all$mosquito == "An_gam" | "An_alb"), ]$symp <- "allo"
+emm_all[emm_all$mosquito %in% c("An_gam", "An_alb"), ]$symp <- "allo"
+#emm_all[which(emm_all$gene == "Pfs47"), ]$symp <- "allo"
+#emm_all[emm_all$gene == "Pfs47" & emm_all$mosquito == "An_alb", ]$symp <- "symp"
+emm_all[emm_all$gene == "CTRP" & emm_all$mosquito == "An_alb", ]$symp <- "symp"
+
+
+emm_plots <- emm_all %>%
+  group_split(gene) %>%
+  setNames(unique(emm_all$gene)) %>%
+  lapply(function(df) {
+    ggplot(df, aes(x = RefAlt, y = prob, group = mosquito, color = mosquito, shape=symp)) + 
+      geom_point(size = 0.5) + 
+      geom_line(size = 0.25) +
+      geom_ribbon(
+        aes(ymin = prob - SE, ymax = prob + SE, fill = mosquito),
+        alpha = 0.3, size= 0.15
+      ) +
+      theme_classic(base_size = 4) + 
+      scale_fill_manual(values = c(
+        "An_gam"   = "#ECC671",
+        "An_mini"  = "#7CB599",
+        "An_steph" = "#D5ABC6",
+        "An_alb"   = "#1F78B4"
+      )) +
+      scale_colour_manual(values = c(
+        "An_gam"   = "#ECC671",
+        "An_mini"  = "#7CB599",
+        "An_steph" = "#D5ABC6",
+        "An_alb"   = "#1F78B4"
+      )) +
+      scale_x_discrete(expand = expansion(mult = c(0.2, 0.2))) +
+      theme(
+  axis.text.y = element_text(angle = 90, vjust = 0.5, hjust = 0.5, size = 3),
+  axis.text.x = element_text(size = 3),
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  axis.ticks = element_line(linewidth = 0.2),
+  axis.ticks.length = unit(0.05, "cm"),
+  legend.position = "none"
+)
+      #ggtitle(unique(df$gene))   # Add gene title
+  })
+
+emm_plots[["CTRP"]]
+emm_plots[["WARP"]]
+
+for (i in seq_along(plots)) {
+  ggsave(
+    filename = file.path("/Users/virginiahowick/Documents/allelic_replacement/plots/", paste0("spz_prev_", genes_to_plot[i], ".pdf")),
+    plot = emm_plots[[i]],
+    width = 0.75,
+    height = 1,
+    units = "in"
+  )
+}
+```
+
+Now do stats and plots for spz Intensity
+```{r}
+spz_nozeros <- subset(alldata, alldata$sporozoites > 0)
+
+
+genes <- c("CTRP",  "WARP")
+
+results <- lapply(genes, function(g) {
+  
+  df <- subset(spz_nozeros, gene == g)   # subset by gene
+  
+  # Drop An_alb for WARP only
+  if (g == "WARP") {
+    df <- subset(df, mosquito != "An_alb")
+    df <- droplevels(df)
+  }
+  
+  form <- log(sporozoites + 1) ~ RefAlt * mosquito + (1 | rep) + (1 | clone)
+  # Fit model
+  mod <- glmmTMB(
+    form,
+    family = gaussian(),
+    data = df
+  )
+  
+
+  # Tidy summary (fixed effects only)
+  sum_df <- broom.mixed::tidy(mod, effects = "fixed") %>%
+    mutate(gene = g)
+  
+  # ANOVA table
+  anova_tab <- Anova(mod, type = "III")
+  anova_df <- as.data.frame(anova_tab) %>%
+    rownames_to_column("term") %>%
+    mutate(gene = g)
+  
+ # EMMeans + contrasts
+  emm_tab <- emmeans(mod, specs = pairwise ~ RefAlt | mosquito)
+  
+  emm_df <- as.data.frame(emm_tab$emmeans) %>%
+    mutate(gene = g)
+  
+  contrast_df <- as.data.frame(emm_tab$contrasts) %>%
+    mutate(gene = g)
+  
+  list(summary = sum_df, anova = anova_df, emm = emm_df, contrasts = contrast_df)
+})
+
+# Combine across genes
+summary_all   <- bind_rows(lapply(results, `[[`, "summary"))
+anova_all     <- bind_rows(lapply(results, `[[`, "anova"))
+emm_all       <- bind_rows(lapply(results, `[[`, "emm"))
+contrasts_all <- bind_rows(lapply(results, `[[`, "contrasts"))
+
+# Export to CSV
+write.csv(summary_all,   "spz_int_summary_ctrpwarp.csv",   row.names = FALSE)
+write.csv(anova_all,     "spz_int_anova_ctrpwarp.csv",     row.names = FALSE)
+write.csv(emm_all,       "spz_int_emm_ctrpwarp.csv",       row.names = FALSE)
+write.csv(contrasts_all, "spz_int_contrasts_ctrpwarp.csv", row.names = FALSE)
+
+summary_all
+anova_all
+emm_all
+contrasts_all
+
+```
+
+Now make the EMM Intensity plots
+```{r}
+
+
+emm_all$symp <- rep("symp", length(emm_all$mosquito))
+emm_all[emm_all$mosquito %in% c("An_gam", "An_alb"), ]$symp <- "allo"
+#emm_all[which(emm_all$gene == "Pfs47"), ]$symp <- "allo"
+#emm_all[emm_all$gene == "Pfs47" & emm_all$mosquito == "An_alb", ]$symp <- "symp"
+emm_all[emm_all$gene == "CTRP" & emm_all$mosquito == "An_alb", ]$symp <- "symp"
+
+
+emm_plots <- emm_all %>%
+  group_split(gene) %>%
+  setNames(unique(emm_all$gene)) %>%
+  lapply(function(df) {
+    ggplot(df, aes(x = RefAlt, y = emmean, group = mosquito, color = mosquito, shape=symp)) + 
+      geom_point(size = 1.3) + 
+      geom_line(size = 0.55) +
+      geom_ribbon(
+        aes(ymin = emmean - SE, ymax = emmean + SE, fill = mosquito),
+        alpha = 0.3
+      ) +
+      theme_classic(base_size = 6) + 
+      scale_fill_manual(values = c(
+        "An_gam"   = "#ECC671",
+        "An_mini"  = "#7CB599",
+        "An_steph" = "#D5ABC6",
+        "An_alb"   = "#1F78B4"
+      )) +
+      scale_colour_manual(values = c(
+        "An_gam"   = "#ECC671",
+        "An_mini"  = "#7CB599",
+        "An_steph" = "#D5ABC6",
+        "An_alb"   = "#1F78B4"
+      )) +
+      scale_x_discrete(expand = expansion(mult = c(0.2, 0.2))) +
+      theme(
+        legend.position = "none",
+        axis.title.x    = element_blank(),
+        axis.title.y    = element_blank(),
+        axis.text       = element_text(size = 6),
+        axis.ticks.length = unit(0.1, "cm")
+      ) 
+      #ggtitle(unique(df$gene))   # Add gene title
+  })
+
+emm_plots[["CTRP"]]
+emm_plots[["WARP"]]
+
+pdf("/Users/virginiahowick/Documents/allelic_replacement/plots/intensity_spz_log_20251112.pdf", width = 8, height = 1.6)
+plot_grid(plotlist = emm_plots, ncol = 5)
+dev.off()
+```
+
+```{r}
+session_info()
+```
+
